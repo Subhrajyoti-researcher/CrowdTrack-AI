@@ -1,6 +1,6 @@
 # CrowdTrack AI – Rail Station CCTV Crowd Counter
 
-End-to-end web app that counts people in CCTV footage using **YOLOv8** person detection, with headcount reported every **30 seconds**.
+End-to-end web app that counts people in CCTV footage using **YOLO11x** person detection, with headcount reported every **30 seconds**.
 
 ## Architecture
 
@@ -8,7 +8,7 @@ End-to-end web app that counts people in CCTV footage using **YOLOv8** person de
 CrowdTrack-AI/
 ├── backend/
 │   ├── main.py           FastAPI server + REST API
-│   ├── crowd_counter.py  YOLOv8 video processing
+│   ├── crowd_counter.py  YOLOv11x video processing
 │   └── requirements.txt
 ├── frontend/
 │   ├── index.html        Upload + Results UI
