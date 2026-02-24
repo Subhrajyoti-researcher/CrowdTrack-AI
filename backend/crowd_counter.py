@@ -10,12 +10,12 @@ from typing import Callable, Optional, Dict, List, Tuple
 logger = logging.getLogger(__name__)
 
 # ── Model config ─────────────────────────────────────────────────────────────
-MODEL_NAME   = "yolov8m.pt"   # medium model – much better than nano for crowds
-CONF_THRESH  = 0.10           # low threshold to catch occluded/small people
-NMS_IOU      = 0.65           # NMS IoU – must be HIGH for dense crowds; close people
-                               # can share 50-70 % box overlap and still be distinct
-TILE_SIZE    = 640            # pixels per tile
-TILE_OVERLAP = 0.35           # 35 % overlap – wider margin at tile edges
+MODEL_NAME   = "yolo11x.pt"   # extra-large model – highest accuracy
+CONF_THRESH  = 0.05           # very low – catches distant/small/occluded people
+NMS_IOU      = 0.40           # IoU for head-region NMS – tighter to match smaller head boxes
+TILE_SIZE    = 416            # smaller tiles = more zoom per person in dense crowds
+TILE_OVERLAP = 0.45           # 45 % overlap – wider margin at tile edges
+HEAD_FRAC    = 0.20           # top 20 % = head only (not shoulders); neighbouring heads rarely overlap
 
 # ── Visualisation config ──────────────────────────────────────────────────────
 BOX_COLOR   = (0, 210, 180)   # teal-green matching UI palette (BGR)
@@ -112,9 +112,12 @@ def _annotate_frame(
     overlay = vis.copy()
     cv2.rectangle(overlay, (0, 0), (bw, banner_h), (7, 16, 31), -1)
     cv2.addWeighted(overlay, 0.80, vis, 0.20, 0, vis)
+    # OpenCV putText only supports ASCII – strip/replace any Unicode chars
+    banner_text = f"{count} people detected  |  {window_label}"
+    banner_text = banner_text.replace("\u2013", "-").replace("\u00b7", "|")
     cv2.putText(
         vis,
-        f"{count} people detected  ·  {window_label}",
+        banner_text,
         (12, 31),
         cv2.FONT_HERSHEY_SIMPLEX, 0.78, BOX_COLOR, 2, cv2.LINE_AA,
     )
@@ -129,11 +132,18 @@ def count_people_tiled(
     """
     Sliding-window tiled inference for dense crowds.
 
-    Splits the frame into overlapping TILE_SIZE×TILE_SIZE patches,
-    runs YOLOv8 on each, converts box coords back to full-frame space,
-    then removes duplicates with global NMS.
+    Splits the frame into overlapping TILE_SIZE x TILE_SIZE patches,
+    runs YOLO11m on each, converts box coords back to full-frame space,
+    then removes cross-tile duplicates using HEAD-REGION NMS.
 
-    Returns (count, kept_boxes_xyxy).
+    Head-region NMS key insight:
+      Full-body boxes of adjacent people in a dense crowd can share
+      60-80% IoU, causing standard NMS to suppress real people.
+      By running NMS only on the top HEAD_FRAC of each box (the head /
+      shoulder area), neighboring heads rarely overlap, so each real
+      person survives deduplication.
+
+    Returns (count, kept_full_boxes_xyxy).
     """
     h, w = frame.shape[:2]
     stride = int(TILE_SIZE * (1 - TILE_OVERLAP))
@@ -157,9 +167,9 @@ def count_people_tiled(
                 tile,
                 classes=[0],          # person only
                 conf=CONF_THRESH,
-                iou=0.70,             # high per-tile NMS – keep overlapping people
+                iou=0.75,             # permissive per-tile NMS – keep overlapping people
                 verbose=False,
-                device="cpu",
+                device="mps",
             )
             for box in results[0].boxes:
                 bx1, by1, bx2, by2 = box.xyxy[0].tolist()
@@ -169,9 +179,18 @@ def count_people_tiled(
     if not all_boxes:
         return 0, []
 
+    # Build head-region boxes for global cross-tile deduplication.
+    # Two adjacent people whose full bodies overlap heavily will have
+    # head regions that barely overlap, so they both survive NMS.
+    head_boxes: List[List[float]] = []
+    for b in all_boxes:
+        bx1, by1, bx2, by2 = b
+        bh = by2 - by1
+        head_boxes.append([bx1, by1, bx2, by1 + bh * HEAD_FRAC])
+
     keep = _nms(
-        np.array(all_boxes, dtype=np.float32),
-        np.array(all_scores, dtype=np.float32),
+        np.array(head_boxes,  dtype=np.float32),
+        np.array(all_scores,  dtype=np.float32),
         NMS_IOU,
     )
     kept_boxes = [all_boxes[i] for i in keep]
@@ -219,7 +238,7 @@ def process_video(
         f"frames={total_frames} | duration={duration:.1f}s"
     )
 
-    # --- Load YOLOv8m ---
+    # --- Load YOLO11x ---
     from ultralytics import YOLO
     model = YOLO(MODEL_NAME)
     logger.info(f"Loaded model: {MODEL_NAME}")
