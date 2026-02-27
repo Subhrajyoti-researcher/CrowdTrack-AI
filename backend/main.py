@@ -7,7 +7,7 @@ from pathlib import Path
 import aiofiles
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from crowd_counter import process_video
@@ -28,10 +28,14 @@ app.add_middleware(
 UPLOAD_DIR = Path(__file__).parent / "uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
 
+OUTPUT_DIR = Path(__file__).parent / "outputs"
+OUTPUT_DIR.mkdir(exist_ok=True)
+
 ALLOWED_EXTENSIONS = {".wmv", ".mp4", ".avi", ".mkv", ".mov", ".m4v"}
 MAX_FILE_SIZE_MB = 2000  # 2 GB soft limit
 
-jobs: dict = {}  # job_id -> { status, progress, results?, error? }
+jobs: dict = {}          # job_id -> { status, progress, results?, error? }
+latest_frames: dict = {} # job_id -> latest JPEG bytes for MJPEG stream
 executor = ThreadPoolExecutor(max_workers=2)
 
 
@@ -79,20 +83,89 @@ async def get_status(job_id: str):
     return jobs[job_id]
 
 
+@app.get("/api/video/{job_id}")
+async def get_video(job_id: str):
+    if job_id not in jobs:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job = jobs[job_id]
+    if job.get("status") != "completed":
+        raise HTTPException(status_code=404, detail="Video not ready yet")
+    video_path = job.get("results", {}).get("video_path")
+    if not video_path or not Path(video_path).exists():
+        raise HTTPException(status_code=404, detail="Annotated video not available")
+    return FileResponse(
+        path=video_path,
+        media_type="video/mp4",
+        filename=f"crowdtrack_{job_id}.mp4",
+    )
+
+
+@app.get("/api/stream/{job_id}")
+async def stream_video(job_id: str):
+    """MJPEG stream of annotated frames as they are detected."""
+    if job_id not in jobs:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    async def mjpeg_generator():
+        last_sent = None
+        while True:
+            job = jobs.get(job_id)
+            if not job:
+                break
+
+            frame_bytes = latest_frames.get(job_id)
+            if frame_bytes is not None and frame_bytes is not last_sent:
+                last_sent = frame_bytes
+                yield (
+                    b"--frame\r\n"
+                    b"Content-Type: image/jpeg\r\n\r\n" +
+                    frame_bytes +
+                    b"\r\n"
+                )
+
+            if job.get("status") in ("completed", "error"):
+                break
+
+            await asyncio.sleep(0.15)
+
+    return StreamingResponse(
+        mjpeg_generator(),
+        media_type="multipart/x-mixed-replace; boundary=frame",
+    )
+
+
 # ---------------------------------------------------------------------------
 # Background worker
 # ---------------------------------------------------------------------------
 
 def _run_job(job_id: str, file_path: str):
+    import time
+    output_path = str(OUTPUT_DIR / f"{job_id}_annotated.mp4")
     try:
         logger.info(f"[{job_id}] Processing started")
+        t_start = time.time()
 
         def on_progress(pct: int):
             jobs[job_id]["progress"] = pct
 
-        result = process_video(file_path, progress_callback=on_progress)
+        def on_frame(frame_bytes: bytes):
+            latest_frames[job_id] = frame_bytes
+
+        result = process_video(
+            file_path,
+            progress_callback=on_progress,
+            output_video_path=output_path,
+            frame_callback=on_frame,
+        )
+
+        result["processing_time_s"] = round(time.time() - t_start, 1)
+
+        # Attach video URL if output was written successfully
+        if result.get("video_path") and Path(result["video_path"]).exists():
+            result["video_url"] = f"/api/video/{job_id}"
+
         jobs[job_id] = {"status": "completed", "progress": 100, "results": result}
-        logger.info(f"[{job_id}] Completed — {len(result['intervals'])} windows")
+        logger.info(f"[{job_id}] Completed — {len(result['intervals'])} windows | {result['processing_time_s']}s")
 
     except Exception as exc:
         logger.exception(f"[{job_id}] Failed")
@@ -103,6 +176,8 @@ def _run_job(job_id: str, file_path: str):
             Path(file_path).unlink(missing_ok=True)
         except Exception:
             pass
+        # Clear frame buffer
+        latest_frames.pop(job_id, None)
 
 
 # ---------------------------------------------------------------------------

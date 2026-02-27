@@ -228,6 +228,43 @@ body {
   margin-top: .4rem;
 }
 
+/* ===== Live badge ===== */
+.live-badge {
+  margin-left: auto;
+  font-size: .72rem;
+  font-weight: 700;
+  letter-spacing: .8px;
+  color: var(--primary);
+  background: rgba(196,97,74,.08);
+  border: 1px solid rgba(196,97,74,.25);
+  padding: .25rem .65rem;
+  border-radius: 20px;
+  animation: pulse 1.4s infinite;
+  white-space: nowrap;
+}
+
+/* ===== Live stream panel ===== */
+.live-stream-wrap {
+  margin-top: 1.25rem;
+  border-radius: 10px;
+  overflow: hidden;
+  background: #0a0a0a;
+  border: 1px solid var(--border);
+  min-height: 180px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.live-stream-placeholder {
+  text-align: center;
+  padding: 2rem;
+}
+.live-stream-img {
+  width: 100%;
+  display: block;
+  border-radius: 10px;
+}
+
 /* ===== Stats grid ===== */
 .stats-grid {
   display: grid;
@@ -484,6 +521,23 @@ body {
   font-size: .82rem;
   color: var(--primary-lt);
   letter-spacing: .3px;
+}
+
+/* ===== Annotated video card ===== */
+.video-card { margin-top: 0; }
+.video-player {
+  width: 100%;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: #000;
+  display: block;
+  max-height: 540px;
+}
+.video-dl-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: .4rem;
+  white-space: nowrap;
 }
 
 /* ===== Utility ===== */

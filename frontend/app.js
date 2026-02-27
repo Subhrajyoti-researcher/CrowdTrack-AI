@@ -20,9 +20,14 @@ const resultsSection    = document.getElementById('resultsSection');
 const progressBar       = document.getElementById('progressBar');
 const progressLabel     = document.getElementById('progressLabel');
 const resetBtn          = document.getElementById('resetBtn');
-const framesCard        = document.getElementById('framesCard');
-const framesGrid        = document.getElementById('framesGrid');
-const lightbox          = document.getElementById('lightbox');
+const framesCard            = document.getElementById('framesCard');
+const framesGrid            = document.getElementById('framesGrid');
+const videoCard             = document.getElementById('videoCard');
+const outputVideo           = document.getElementById('outputVideo');
+const videoDownloadBtn      = document.getElementById('videoDownloadBtn');
+const liveStream            = document.getElementById('liveStream');
+const liveStreamPlaceholder = document.getElementById('liveStreamPlaceholder');
+const lightbox              = document.getElementById('lightbox');
 const lightboxClose     = document.getElementById('lightboxClose');
 const lightboxImg       = document.getElementById('lightboxImg');
 const lightboxCaption   = document.getElementById('lightboxCaption');
@@ -74,12 +79,31 @@ async function startAnalysis() {
       throw new Error(err.detail || 'Upload failed');
     }
     const { job_id } = await res.json();
+    startLiveStream(job_id);
     pollStatus(job_id);
   } catch (err) {
     alert(`Upload error: ${err.message}`);
     showSection('upload');
     analyzeBtn.disabled = false;
   }
+}
+
+// ---- Live MJPEG stream ----
+function startLiveStream(jobId) {
+  liveStreamPlaceholder.classList.remove('hidden');
+  liveStream.classList.add('hidden');
+  liveStream.onload = () => {
+    liveStreamPlaceholder.classList.add('hidden');
+    liveStream.classList.remove('hidden');
+  };
+  liveStream.src = `${API_BASE}/api/stream/${jobId}`;
+}
+
+function stopLiveStream() {
+  liveStream.src = '';
+  liveStream.onload = null;
+  liveStream.classList.add('hidden');
+  liveStreamPlaceholder.classList.remove('hidden');
 }
 
 // ---- Polling ----
@@ -114,19 +138,30 @@ function setProgress(pct) {
 
 // ---- Render results ----
 function renderResults(data) {
-  const { duration, overall_max, overall_avg, intervals } = data;
+  stopLiveStream();
+  const { duration, overall_max, overall_avg, intervals, video_url, processing_time_s } = data;
 
   // Summary cards
-  setText('statDuration', formatDuration(duration));
-  setText('statPeak',    overall_max);
-  setText('statAvg',     overall_avg);
-  setText('statWindows', intervals.length);
+  setText('statDuration',  formatDuration(duration));
+  setText('statPeak',      overall_max);
+  setText('statAvg',       overall_avg);
+  setText('statWindows',   intervals.length);
+  setText('statProcTime',  processing_time_s != null ? formatDuration(processing_time_s) : '—');
 
   // Chart
   buildChart(intervals);
 
   // Table
   buildTable(intervals, overall_max);
+
+  // Annotated video player
+  if (video_url) {
+    outputVideo.src       = video_url;
+    videoDownloadBtn.href = video_url;
+    videoCard.classList.remove('hidden');
+  } else {
+    videoCard.classList.add('hidden');
+  }
 
   // Detection frame previews
   buildFrames(intervals, overall_max);
@@ -333,8 +368,11 @@ resetBtn.addEventListener('click', () => {
   fileHint.textContent = '';
   analyzeBtn.disabled = true;
   clearInterval(pollTimer);
+  stopLiveStream();
   framesGrid.innerHTML = '';
   framesCard.classList.add('hidden');
+  outputVideo.src = '';
+  videoCard.classList.add('hidden');
   showSection('upload');
 });
 

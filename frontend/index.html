@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>CrowdTrack AI – Rail Station Analytics</title>
-  <link rel="stylesheet" href="style.css?v=4" />
+  <link rel="stylesheet" href="style.css?v=7" />
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
 </head>
 <body>
@@ -73,13 +73,23 @@
         <div class="spinner"></div>
         <div>
           <h2 class="section-title" style="margin:0">Analysing footage…</h2>
-          <p class="section-sub" style="margin:0">Sampling every 2 seconds</p>
+          <p class="section-sub" style="margin:0">Live detection preview · sampling every 2 seconds</p>
         </div>
+        <span class="live-badge">&#9679; LIVE</span>
       </div>
       <div class="progress-bar-wrap">
         <div class="progress-bar" id="progressBar"></div>
       </div>
       <p class="progress-label" id="progressLabel">0%</p>
+
+      <!-- Live MJPEG stream -->
+      <div class="live-stream-wrap" id="liveStreamWrap">
+        <div class="live-stream-placeholder" id="liveStreamPlaceholder">
+          <div class="spinner" style="margin:0 auto .75rem;width:28px;height:28px;border-width:2.5px"></div>
+          <p style="color:var(--text-muted);font-size:.82rem;margin:0">Waiting for first detection…</p>
+        </div>
+        <img id="liveStream" src="" alt="Live detection stream" class="live-stream-img hidden" />
+      </div>
     </section>
 
     <!-- ====== RESULTS SECTION ====== -->
@@ -106,6 +116,11 @@
           <span class="stat-icon">🪟</span>
           <span class="stat-value" id="statWindows">—</span>
           <span class="stat-label">30-sec Windows</span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-icon">⚡</span>
+          <span class="stat-value" id="statProcTime">—</span>
+          <span class="stat-label">Processing Time</span>
         </div>
       </div>
 
@@ -143,6 +158,27 @@
             <tbody id="resultsTableBody"></tbody>
           </table>
         </div>
+      </div>
+
+      <!-- Annotated Video -->
+      <div class="card video-card hidden" id="videoCard">
+        <div class="chart-header">
+          <div>
+            <h3 class="chart-title">Annotated Video</h3>
+            <p class="frames-sub">Full video with bounding boxes &amp; live headcount</p>
+          </div>
+          <a class="btn-primary video-dl-btn" id="videoDownloadBtn" href="#" download>
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+              <path d="M7 1v8M3 7l4 4 4-4" stroke="white" stroke-width="1.8"
+                    stroke-linecap="round" stroke-linejoin="round"/>
+              <rect x="1" y="11" width="12" height="2" rx="1" fill="white"/>
+            </svg>
+            Download
+          </a>
+        </div>
+        <video id="outputVideo" controls autoplay muted class="video-player">
+          Your browser does not support video playback.
+        </video>
       </div>
 
       <!-- Detection Frames -->

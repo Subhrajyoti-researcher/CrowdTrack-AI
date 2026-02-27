@@ -11,11 +11,12 @@ logger = logging.getLogger(__name__)
 
 # ── Model config ─────────────────────────────────────────────────────────────
 MODEL_NAME   = "yolo11x.pt"   # extra-large model – highest accuracy
-CONF_THRESH  = 0.05           # very low – catches distant/small/occluded people
-NMS_IOU      = 0.40           # IoU for head-region NMS – tighter to match smaller head boxes
-TILE_SIZE    = 416            # smaller tiles = more zoom per person in dense crowds
-TILE_OVERLAP = 0.45           # 45 % overlap – wider margin at tile edges
-HEAD_FRAC    = 0.20           # top 20 % = head only (not shoulders); neighbouring heads rarely overlap
+CONF_THRESH  = 0.25           # high threshold – removes partial-body / reflection false positives
+NMS_IOU      = 0.25           # tight IoU for cross-tile dedup NMS
+TILE_SIZE    = 640            # larger tiles → fewer tiles → fewer cross-tile seam duplicates
+TILE_OVERLAP = 0.25           # 25 % overlap – enough to catch edge persons, fewer redundant tiles
+HEAD_FRAC    = 0.40           # top 40 % of box for NMS; catches partial-view overlaps better
+MIN_HEAD_PX  = 40             # minimum upper-body region height for short/seated-person boxes
 
 # ── Visualisation config ──────────────────────────────────────────────────────
 BOX_COLOR   = (0, 210, 180)   # teal-green matching UI palette (BGR)
@@ -126,6 +127,38 @@ def _annotate_frame(
     return base64.b64encode(buf.tobytes()).decode("utf-8")
 
 
+def _draw_for_video(
+    frame: np.ndarray,
+    boxes: List[List[float]],
+    count: int,
+    label: str,
+) -> np.ndarray:
+    """
+    Draw bounding boxes + headcount banner on a full-resolution frame
+    for video output.  Modifies a copy; original is untouched.
+    """
+    vis = frame.copy()
+
+    for box in boxes:
+        x1 = int(box[0]); y1 = int(box[1])
+        x2 = int(box[2]); y2 = int(box[3])
+        cv2.rectangle(vis, (x1, y1), (x2, y2), BOX_COLOR, 2)
+        cx = (x1 + x2) // 2
+        cv2.circle(vis, (cx, y1), HEAD_DOT_R, BOX_COLOR, -1)
+
+    bw = vis.shape[1]
+    overlay = vis.copy()
+    cv2.rectangle(overlay, (0, 0), (bw, 50), (7, 16, 31), -1)
+    cv2.addWeighted(overlay, 0.80, vis, 0.20, 0, vis)
+    cv2.putText(
+        vis,
+        f"{count} people  |  {label}",
+        (14, 34),
+        cv2.FONT_HERSHEY_SIMPLEX, 0.9, BOX_COLOR, 2, cv2.LINE_AA,
+    )
+    return vis
+
+
 def count_people_tiled(
     model, frame: np.ndarray
 ) -> Tuple[int, List[List[float]]]:
@@ -133,7 +166,7 @@ def count_people_tiled(
     Sliding-window tiled inference for dense crowds.
 
     Splits the frame into overlapping TILE_SIZE x TILE_SIZE patches,
-    runs YOLO11m on each, converts box coords back to full-frame space,
+    runs YOLO11x on each, converts box coords back to full-frame space,
     then removes cross-tile duplicates using HEAD-REGION NMS.
 
     Head-region NMS key insight:
@@ -167,7 +200,7 @@ def count_people_tiled(
                 tile,
                 classes=[0],          # person only
                 conf=CONF_THRESH,
-                iou=0.75,             # permissive per-tile NMS – keep overlapping people
+                iou=0.40,             # tightened per-tile NMS – reduce duplicate detections
                 verbose=False,
                 device="mps",
             )
@@ -179,14 +212,12 @@ def count_people_tiled(
     if not all_boxes:
         return 0, []
 
-    # Build head-region boxes for global cross-tile deduplication.
-    # Two adjacent people whose full bodies overlap heavily will have
-    # head regions that barely overlap, so they both survive NMS.
     head_boxes: List[List[float]] = []
     for b in all_boxes:
         bx1, by1, bx2, by2 = b
         bh = by2 - by1
-        head_boxes.append([bx1, by1, bx2, by1 + bh * HEAD_FRAC])
+        head_h = max(bh * HEAD_FRAC, MIN_HEAD_PX)  # ensure meaningful head region even for short boxes
+        head_boxes.append([bx1, by1, bx2, by1 + head_h])
 
     keep = _nms(
         np.array(head_boxes,  dtype=np.float32),
@@ -203,11 +234,17 @@ def process_video(
     video_path: str,
     progress_callback: Optional[Callable[[int], None]] = None,
     sample_every_n_seconds: float = 2.0,
+    output_video_path: Optional[str] = None,
+    frame_callback: Optional[Callable[[bytes], None]] = None,
 ) -> Dict:
     """
     Count people in a video and aggregate results into 30-second windows.
-    Uses tiled YOLOv8m inference for dense-crowd accuracy.
+    Uses tiled YOLO11x inference for dense-crowd accuracy.
     Each interval includes a base64 JPEG preview of the peak detection frame.
+
+    output_video_path : writes the full annotated video as mp4.
+    frame_callback    : called with JPEG bytes after each detection sample
+                        (used for the MJPEG live preview stream).
     """
     # --- Format conversion ---
     suffix = Path(video_path).suffix.lower()
@@ -232,11 +269,27 @@ def process_video(
         fps = 25.0
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     duration     = total_frames / fps if total_frames > 0 else 0
+    vid_w        = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    vid_h        = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
     logger.info(
         f"Video: {Path(video_path).name} | fps={fps:.2f} | "
-        f"frames={total_frames} | duration={duration:.1f}s"
+        f"frames={total_frames} | duration={duration:.1f}s | "
+        f"resolution={vid_w}x{vid_h}"
     )
+
+    # --- Set up output video writer ---
+    out_writer         = None
+    actual_output_path = None
+    if output_video_path:
+        fourcc     = cv2.VideoWriter_fourcc(*'mp4v')
+        out_writer = cv2.VideoWriter(output_video_path, fourcc, fps, (vid_w, vid_h))
+        if out_writer.isOpened():
+            actual_output_path = output_video_path
+            logger.info(f"Output video writer opened → {output_video_path}")
+        else:
+            logger.warning("VideoWriter failed to open; skipping video output")
+            out_writer = None
 
     # --- Load YOLO11x ---
     from ultralytics import YOLO
@@ -247,9 +300,10 @@ def process_video(
     sample_interval  = max(1, int(fps * sample_every_n_seconds))
     window_size      = 30
     counts_by_second: Dict[int, int]  = {}
+    window_peaks:     Dict[int, dict] = {}
 
-    # For each 30-second window, track the frame where the highest count occurred
-    window_peaks: Dict[int, dict] = {}   # ws -> {count, frame, boxes}
+    last_boxes: List[List[float]] = []
+    last_count: int = 0
 
     frame_idx = 0
     while True:
@@ -257,26 +311,46 @@ def process_video(
         if not ret:
             break
 
-        if frame_idx % sample_interval == 0:
-            current_second = int(frame_idx / fps)
-            count, boxes   = count_people_tiled(model, frame)
-            counts_by_second[current_second] = count
-            logger.info(f"  t={current_second}s → {count} people")
+        current_second = frame_idx / fps
+        ws = int(current_second // window_size) * window_size
+        we = ws + window_size
+        frame_label = f"{format_time(ws)}-{format_time(we)}"
 
-            ws = (current_second // window_size) * window_size
-            if ws not in window_peaks or count >= window_peaks[ws]["count"]:
-                window_peaks[ws] = {
+        if frame_idx % sample_interval == 0:
+            count, boxes   = count_people_tiled(model, frame)
+            last_count     = count
+            last_boxes     = boxes
+            counts_by_second[int(current_second)] = count
+            logger.info(f"  t={int(current_second)}s -> {count} people")
+
+            peak_ws = (int(current_second) // window_size) * window_size
+            if peak_ws not in window_peaks or count >= window_peaks[peak_ws]["count"]:
+                window_peaks[peak_ws] = {
                     "count": count,
                     "frame": frame.copy(),
                     "boxes": boxes,
                 }
 
+            # Push annotated frame for live MJPEG streaming
+            if frame_callback:
+                stream_frame = _draw_for_video(frame, last_boxes, last_count, frame_label)
+                _, buf = cv2.imencode(".jpg", stream_frame, [cv2.IMWRITE_JPEG_QUALITY, 72])
+                frame_callback(buf.tobytes())
+
             if progress_callback and total_frames > 0:
                 progress_callback(min(97, int((frame_idx / total_frames) * 100)))
+
+        # Write annotated frame to output video
+        if out_writer is not None:
+            annotated = _draw_for_video(frame, last_boxes, last_count, frame_label)
+            out_writer.write(annotated)
 
         frame_idx += 1
 
     cap.release()
+    if out_writer is not None:
+        out_writer.release()
+        logger.info(f"Output video saved → {actual_output_path}")
 
     if converted_path and os.path.exists(converted_path):
         os.remove(converted_path)
@@ -292,7 +366,7 @@ def process_video(
         we = min(ws + window_size, max_second)
         window_counts = [counts_by_second[s] for s in range(ws, we) if s in counts_by_second]
         if window_counts:
-            label = f"{format_time(ws)} – {format_time(we)}"
+            label = f"{format_time(ws)} \u2013 {format_time(we)}"
             interval: Dict = {
                 "start":     ws,
                 "end":       we,
@@ -302,7 +376,6 @@ def process_video(
                 "max_count": max(window_counts),
                 "samples":   len(window_counts),
             }
-            # Attach annotated preview for this window
             if ws in window_peaks:
                 peak = window_peaks[ws]
                 interval["preview_image"] = _annotate_frame(
@@ -326,4 +399,5 @@ def process_video(
         "overall_max":  overall_max,
         "overall_avg":  overall_avg,
         "intervals":    intervals,
+        "video_path":   actual_output_path,
     }
