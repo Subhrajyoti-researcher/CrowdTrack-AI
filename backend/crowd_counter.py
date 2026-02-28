@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 # ── Model config ─────────────────────────────────────────────────────────────
 MODEL_NAME   = "yolo11x.pt"   # extra-large model – highest accuracy
-CONF_THRESH  = 0.20           # lower threshold catches valid detections in low-light / night CCTV
+CONF_THRESH  = 0.30           # raised to eliminate low-confidence false positives in night CCTV
 NMS_IOU      = 0.35           # relaxed IoU – prevents suppression of close-standing people
 TILE_SIZE    = 640            # larger tiles → fewer tiles → fewer cross-tile seam duplicates
 TILE_OVERLAP = 0.35           # 35 % overlap – better coverage of people near tile boundaries
@@ -201,7 +201,7 @@ def count_people_tiled(
                 tile,
                 classes=[0],          # person only
                 conf=CONF_THRESH,
-                iou=0.50,             # per-tile NMS – cross-tile head-NMS handles final dedup
+                iou=0.45,             # per-tile NMS – cross-tile head-NMS handles final dedup
                 verbose=False,
                 device="mps",
             )
