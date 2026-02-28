@@ -3,7 +3,9 @@ import {
   CategoryScale,
   LinearScale,
   BarElement,
+  BarController,
   LineElement,
+  LineController,
   PointElement,
   Tooltip,
   Filler,
@@ -11,7 +13,7 @@ import {
 } from 'chart.js';
 import { Chart } from 'react-chartjs-2';
 
-ChartJS.register(CategoryScale, LinearScale, BarElement, LineElement, PointElement, Tooltip, Filler, Title);
+ChartJS.register(CategoryScale, LinearScale, BarElement, BarController, LineElement, LineController, PointElement, Tooltip, Filler, Title);
 
 export default function CrowdChart({ intervals }) {
   const labels = intervals.map(i => i.label);
@@ -55,22 +57,22 @@ export default function CrowdChart({ intervals }) {
       legend: { display: false },
       tooltip: {
         backgroundColor: '#ffffff',
-        borderColor: '#e4dfd8',
+        borderColor: '#dde1e7',
         borderWidth: 1,
-        titleColor: '#1a1a1a',
-        bodyColor: '#717171',
+        titleColor: '#111827',
+        bodyColor: '#6b7280',
         callbacks: { label: ctx => ` ${ctx.dataset.label}: ${ctx.parsed.y} people` },
       },
     },
     scales: {
       x: {
-        ticks: { color: '#717171', maxRotation: 45, font: { size: 11 } },
-        grid:  { color: 'rgba(0,0,0,0.06)' },
+        ticks: { color: '#6b7280', maxRotation: 45, font: { size: 11 } },
+        grid:  { color: 'rgba(0,0,0,0.05)' },
       },
       y: {
-        ticks: { color: '#717171', stepSize: 1 },
-        grid:  { color: 'rgba(0,0,0,0.06)' },
-        title: { display: true, text: 'People', color: '#717171' },
+        ticks: { color: '#6b7280', stepSize: 1 },
+        grid:  { color: 'rgba(0,0,0,0.05)' },
+        title: { display: true, text: 'People', color: '#6b7280' },
         beginAtZero: true,
       },
     },

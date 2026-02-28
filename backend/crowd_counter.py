@@ -231,12 +231,43 @@ def count_people_tiled(
 
 # ── Main entry point ──────────────────────────────────────────────────────────
 
+def _fire_window_callback(
+    callback: Callable,
+    ws: int,
+    window_size: int,
+    counts_by_second: Dict[int, int],
+    window_peaks: Dict[int, dict],
+) -> None:
+    """Build a completed interval dict and pass it to window_callback."""
+    we = ws + window_size
+    label = f"{format_time(ws)} \u2013 {format_time(we)}"
+    window_counts = [counts_by_second[s] for s in range(ws, we) if s in counts_by_second]
+    if not window_counts:
+        return
+    interval: Dict = {
+        "start":     ws,
+        "end":       we,
+        "label":     label,
+        "min_count": min(window_counts),
+        "avg_count": round(sum(window_counts) / len(window_counts), 1),
+        "max_count": max(window_counts),
+        "samples":   len(window_counts),
+    }
+    if ws in window_peaks:
+        peak = window_peaks[ws]
+        interval["preview_image"] = _annotate_frame(
+            peak["frame"], peak["boxes"], peak["count"], label
+        )
+    callback(interval)
+
+
 def process_video(
     video_path: str,
     progress_callback: Optional[Callable[[int], None]] = None,
     sample_every_n_seconds: float = 2.0,
     output_video_path: Optional[str] = None,
     frame_callback: Optional[Callable[[bytes], None]] = None,
+    window_callback: Optional[Callable[[Dict], None]] = None,
 ) -> Dict:
     """
     Count people in a video and aggregate results into 30-second windows.
@@ -246,6 +277,8 @@ def process_video(
     output_video_path : writes the full annotated video as mp4.
     frame_callback    : called with JPEG bytes after each detection sample
                         (used for the MJPEG live preview stream).
+    window_callback   : called with a completed interval dict as soon as a
+                        30-second window finishes (used for live preview grid).
     """
     # --- Format conversion ---
     suffix = Path(video_path).suffix.lower()
@@ -305,6 +338,7 @@ def process_video(
 
     last_boxes: List[List[float]] = []
     last_count: int = 0
+    last_reported_ws: Optional[int] = None   # tracks last window notified via window_callback
 
     frame_idx = 0
     while True:
@@ -331,6 +365,15 @@ def process_video(
                     "frame": frame.copy(),
                     "boxes": boxes,
                 }
+
+            # Fire window_callback when we move into a new 30-s window
+            if window_callback and last_reported_ws is not None and ws > last_reported_ws:
+                _fire_window_callback(
+                    window_callback, last_reported_ws, window_size,
+                    counts_by_second, window_peaks,
+                )
+            if last_reported_ws is None or ws > last_reported_ws:
+                last_reported_ws = ws
 
             # Push annotated frame for live MJPEG streaming
             if frame_callback:

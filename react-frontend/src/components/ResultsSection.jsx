@@ -33,6 +33,7 @@ export default function ResultsSection({ results, onReset, onOpenLightbox }) {
       <ResultsTable
         intervals={intervals}
         peakMax={overall_max}
+        overallAvg={overall_avg}
         onViewFrame={scrollToFrame}
       />
 
@@ -44,12 +45,6 @@ export default function ResultsSection({ results, onReset, onOpenLightbox }) {
         frameRefs={frameRefs}
         onOpenLightbox={onOpenLightbox}
       />
-
-      <div style={{ textAlign: 'center', marginTop: '1.5rem' }}>
-        <button className="btn-secondary" id="resetBtn" onClick={onReset}>
-          ↩ Upload Another Video
-        </button>
-      </div>
     </section>
   );
 }

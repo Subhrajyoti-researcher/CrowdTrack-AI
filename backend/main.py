@@ -67,7 +67,7 @@ async def upload_video(file: UploadFile = File(...)):
             await out.write(chunk)
 
     logger.info(f"[{job_id}] Saved upload → {dest_path}")
-    jobs[job_id] = {"status": "processing", "progress": 0}
+    jobs[job_id] = {"status": "processing", "progress": 0, "partial_intervals": []}
 
     # Kick off background processing
     loop = asyncio.get_event_loop()
@@ -151,11 +151,15 @@ def _run_job(job_id: str, file_path: str):
         def on_frame(frame_bytes: bytes):
             latest_frames[job_id] = frame_bytes
 
+        def on_window(interval: dict):
+            jobs[job_id]["partial_intervals"].append(interval)
+
         result = process_video(
             file_path,
             progress_callback=on_progress,
             output_video_path=output_path,
             frame_callback=on_frame,
+            window_callback=on_window,
         )
 
         result["processing_time_s"] = round(time.time() - t_start, 1)

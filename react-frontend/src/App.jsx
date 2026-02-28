@@ -15,15 +15,16 @@ export default function App() {
   const [fileHint,     setFileHint]     = useState('');
   const [jobId,        setJobId]        = useState(null);
   const [progress,     setProgress]     = useState(0);
-  const [results,      setResults]      = useState(null);
-  const [lightbox,     setLightbox]     = useState(null);       // { src, caption } | null
-  const [error,        setError]        = useState(null);
+  const [results,          setResults]          = useState(null);
+  const [partialIntervals, setPartialIntervals] = useState([]);
+  const [lightbox,         setLightbox]         = useState(null); // { src, caption } | null
+  const [error,            setError]            = useState(null);
 
   // ---- File selection ----
   function handleFile(file) {
     setSelectedFile(file);
     const mb = (file.size / (1024 * 1024)).toFixed(1);
-    setFileHint(`📎 ${file.name}  (${mb} MB)`);
+    setFileHint(`${file.name}  (${mb} MB)`);
   }
 
   // ---- Start analysis ----
@@ -55,6 +56,9 @@ export default function App() {
         if (!data) return;
 
         setProgress(data.progress ?? 0);
+        if (data.partial_intervals?.length) {
+          setPartialIntervals(data.partial_intervals);
+        }
 
         if (data.status === 'completed') {
           clearInterval(timer);
@@ -82,6 +86,7 @@ export default function App() {
     setJobId(null);
     setProgress(0);
     setResults(null);
+    setPartialIntervals([]);
     setLightbox(null);
     setError(null);
     setSection('upload');
@@ -90,15 +95,15 @@ export default function App() {
 
   return (
     <>
-      <Header />
+      <Header section={section} onHome={handleReset} />
       <main className="main">
         {error && (
-          <div style={{
-            background: 'rgba(196,97,74,.12)', border: '1px solid var(--primary)',
-            borderRadius: 'var(--radius)', padding: '.75rem 1rem',
-            color: 'var(--primary)', fontSize: '.9rem', marginBottom: '1rem',
-          }}>
-            ⚠ {error}
+          <div className="error-banner">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <circle cx="8" cy="8" r="7" stroke="currentColor" strokeWidth="1.5"/>
+              <path d="M8 5v3.5M8 10.5v.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+            </svg>
+            {error}
           </div>
         )}
 
@@ -112,7 +117,12 @@ export default function App() {
         )}
 
         {section === 'processing' && (
-          <ProcessingSection progress={progress} jobId={jobId} />
+          <ProcessingSection
+            progress={progress}
+            jobId={jobId}
+            partialIntervals={partialIntervals}
+            onOpenLightbox={(src, caption) => setLightbox({ src, caption })}
+          />
         )}
 
         {section === 'results' && results && (

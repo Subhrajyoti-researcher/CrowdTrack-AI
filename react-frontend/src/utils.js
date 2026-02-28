@@ -12,3 +12,9 @@ export function crowdLevel(count, high, medium) {
   if (count >= medium) return { cls: 'medium', label: '🟡 Medium' };
   return                      { cls: 'low',    label: '🟢 Low' };
 }
+
+export function crowdLevelText(count, high, medium) {
+  if (count >= high)   return { cls: 'high',   label: 'High' };
+  if (count >= medium) return { cls: 'medium', label: 'Medium' };
+  return                      { cls: 'low',    label: 'Low' };
+}
