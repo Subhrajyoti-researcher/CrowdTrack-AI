@@ -19,9 +19,18 @@ env/
 *.onnx
 *.weights
 
-# Uploads / temp files
+# Uploads / outputs / temp files
 backend/uploads/
+backend/outputs/
+backend/hls/
 uploads/
+
+# React build output and deps
+react-frontend/dist/
+react-frontend/node_modules/
+
+# Memory / session files
+memory/
 
 # macOS
 .DS_Store
