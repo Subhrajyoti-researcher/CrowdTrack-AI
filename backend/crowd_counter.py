@@ -19,9 +19,10 @@ HEAD_FRAC    = 0.40           # top 40 % of box for NMS; catches partial-view ov
 MIN_HEAD_PX  = 40             # minimum upper-body region height for short/seated-person boxes
 
 # ── Visualisation config ──────────────────────────────────────────────────────
-BOX_COLOR   = (0, 210, 180)   # teal-green matching UI palette (BGR)
-HEAD_DOT_R  = 4               # radius of filled dot drawn at top-centre of each box
-PREVIEW_W   = 960             # max width of annotated preview JPEG
+BOX_COLOR      = (0, 210, 180)   # teal-green matching UI palette (BGR)
+PREVIEW_W      = 960             # max width of annotated preview JPEG
+HEAD_DRAW_FRAC = 0.25            # top 25 % of body box drawn as head box (visualisation only)
+HEAD_DRAW_MIN  = 35              # minimum head-box draw height in pixels
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -99,13 +100,13 @@ def _annotate_frame(
     else:
         sx, sy = 1.0, 1.0
 
-    # Draw each person detection
+    # Draw head-region box for each person detection
     for box in boxes:
         x1 = int(box[0] * sx);  y1 = int(box[1] * sy)
         x2 = int(box[2] * sx);  y2 = int(box[3] * sy)
-        cv2.rectangle(vis, (x1, y1), (x2, y2), BOX_COLOR, 2)
-        cx = (x1 + x2) // 2
-        cv2.circle(vis, (cx, y1), HEAD_DOT_R, BOX_COLOR, -1)
+        bh = y2 - y1
+        hy2 = y1 + max(int(bh * HEAD_DRAW_FRAC), HEAD_DRAW_MIN)
+        cv2.rectangle(vis, (x1, y1), (x2, hy2), BOX_COLOR, 2)
 
     # Top banner overlay
     bw = vis.shape[1]
@@ -142,9 +143,9 @@ def _draw_for_video(
     for box in boxes:
         x1 = int(box[0]); y1 = int(box[1])
         x2 = int(box[2]); y2 = int(box[3])
-        cv2.rectangle(vis, (x1, y1), (x2, y2), BOX_COLOR, 2)
-        cx = (x1 + x2) // 2
-        cv2.circle(vis, (cx, y1), HEAD_DOT_R, BOX_COLOR, -1)
+        bh = y2 - y1
+        hy2 = y1 + max(int(bh * HEAD_DRAW_FRAC), HEAD_DRAW_MIN)
+        cv2.rectangle(vis, (x1, y1), (x2, hy2), BOX_COLOR, 2)
 
     bw = vis.shape[1]
     overlay = vis.copy()

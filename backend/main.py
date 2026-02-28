@@ -184,6 +184,6 @@ def _run_job(job_id: str, file_path: str):
 # Serve frontend (must be last — catch-all)
 # ---------------------------------------------------------------------------
 
-FRONTEND_DIR = Path(__file__).parent.parent / "frontend"
+FRONTEND_DIR = Path(__file__).parent.parent / "react-frontend" / "dist"
 if FRONTEND_DIR.exists():
     app.mount("/", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="static")
