@@ -11,12 +11,12 @@ logger = logging.getLogger(__name__)
 
 # ── Model config ─────────────────────────────────────────────────────────────
 MODEL_NAME   = "yolo11x.pt"   # extra-large model – highest accuracy
-CONF_THRESH  = 0.25           # high threshold – removes partial-body / reflection false positives
-NMS_IOU      = 0.25           # tight IoU for cross-tile dedup NMS
+CONF_THRESH  = 0.20           # lower threshold catches valid detections in low-light / night CCTV
+NMS_IOU      = 0.35           # relaxed IoU – prevents suppression of close-standing people
 TILE_SIZE    = 640            # larger tiles → fewer tiles → fewer cross-tile seam duplicates
-TILE_OVERLAP = 0.25           # 25 % overlap – enough to catch edge persons, fewer redundant tiles
+TILE_OVERLAP = 0.35           # 35 % overlap – better coverage of people near tile boundaries
 HEAD_FRAC    = 0.40           # top 40 % of box for NMS; catches partial-view overlaps better
-MIN_HEAD_PX  = 40             # minimum upper-body region height for short/seated-person boxes
+MIN_HEAD_PX  = 25             # lower minimum catches smaller/distant figures farther from camera
 
 # ── Visualisation config ──────────────────────────────────────────────────────
 BOX_COLOR      = (0, 210, 180)   # teal-green matching UI palette (BGR)
@@ -201,7 +201,7 @@ def count_people_tiled(
                 tile,
                 classes=[0],          # person only
                 conf=CONF_THRESH,
-                iou=0.40,             # tightened per-tile NMS – reduce duplicate detections
+                iou=0.50,             # per-tile NMS – cross-tile head-NMS handles final dedup
                 verbose=False,
                 device="mps",
             )
@@ -264,7 +264,7 @@ def _fire_window_callback(
 def process_video(
     video_path: str,
     progress_callback: Optional[Callable[[int], None]] = None,
-    sample_every_n_seconds: float = 2.0,
+    sample_every_n_seconds: float = 1.0,
     output_video_path: Optional[str] = None,
     frame_callback: Optional[Callable[[bytes], None]] = None,
     window_callback: Optional[Callable[[Dict], None]] = None,
