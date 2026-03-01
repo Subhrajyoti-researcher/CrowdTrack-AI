@@ -3,11 +3,17 @@ import subprocess
 import os
 import base64
 import logging
+import threading
 import numpy as np
 from pathlib import Path
 from typing import Callable, Optional, Dict, List, Tuple
 
 logger = logging.getLogger(__name__)
+
+# Serialise all GPU calls — MPS (Apple Metal) does not support true concurrent
+# inference.  Without this lock the two job threads fight over the GPU and
+# whichever grabs it first starves the other completely.
+_GPU_LOCK = threading.Lock()
 
 # ── Model config ─────────────────────────────────────────────────────────────
 MODEL_NAME   = "yolo11x.pt"   # extra-large model – highest accuracy
@@ -17,6 +23,18 @@ TILE_SIZE    = 640            # larger tiles → fewer tiles → fewer cross-til
 TILE_OVERLAP = 0.35           # 35 % overlap – better coverage of people near tile boundaries
 HEAD_FRAC    = 0.40           # top 40 % of box for NMS; catches partial-view overlaps better
 MIN_HEAD_PX  = 25             # lower minimum catches smaller/distant figures farther from camera
+
+# ── Dense-mode config (targeting 99 % recall for high-density crowds) ─────────
+# Strategy: small tiles (384 px) → fewer people per tile → YOLO detects more;
+#           near-disabled per-tile NMS (iou=0.85) → adjacent people survive;
+#           pure head-region dedup (HEAD_FRAC=0.12) → adjacent heads rarely overlap.
+DENSE_CONF_THRESH  = 0.10   # aggressive – catches occluded / partially-visible people
+DENSE_NMS_IOU      = 0.20   # tight cross-tile head NMS – heads of adjacent people rarely overlap
+DENSE_TILE_SIZE    = 384    # small tiles → ~10-20 people per tile → YOLO detects each clearly
+DENSE_TILE_OVERLAP = 0.60   # 60 % overlap – every person seen in 2-3 tiles for reliable dedup
+DENSE_HEAD_FRAC    = 0.12   # top 12 % = pure head/hat crown – minimal inter-person overlap
+DENSE_MIN_HEAD_PX  = 6      # catch smallest distant figures
+DENSE_BOX_COLOR    = (0, 140, 255)   # orange-amber (BGR) – visually distinct from standard
 
 # ── Visualisation config ──────────────────────────────────────────────────────
 BOX_COLOR      = (0, 210, 180)   # teal-green matching UI palette (BGR)
@@ -83,9 +101,10 @@ def _annotate_frame(
     boxes: List[List[float]],
     count: int,
     window_label: str,
+    box_color: tuple = BOX_COLOR,
 ) -> str:
     """
-    Draw teal bounding boxes + head dots on frame.
+    Draw bounding boxes on frame.
     Adds a semi-transparent banner at the top with count & window label.
     Returns a base64-encoded JPEG string (max PREVIEW_W px wide).
     """
@@ -106,7 +125,7 @@ def _annotate_frame(
         x2 = int(box[2] * sx);  y2 = int(box[3] * sy)
         bh = y2 - y1
         hy2 = y1 + max(int(bh * HEAD_DRAW_FRAC), HEAD_DRAW_MIN)
-        cv2.rectangle(vis, (x1, y1), (x2, hy2), BOX_COLOR, 2)
+        cv2.rectangle(vis, (x1, y1), (x2, hy2), box_color, 2)
 
     # Top banner overlay
     bw = vis.shape[1]
@@ -121,7 +140,7 @@ def _annotate_frame(
         vis,
         banner_text,
         (12, 31),
-        cv2.FONT_HERSHEY_SIMPLEX, 0.78, BOX_COLOR, 2, cv2.LINE_AA,
+        cv2.FONT_HERSHEY_SIMPLEX, 0.78, box_color, 2, cv2.LINE_AA,
     )
 
     _, buf = cv2.imencode(".jpg", vis, [cv2.IMWRITE_JPEG_QUALITY, 82])
@@ -133,6 +152,7 @@ def _draw_for_video(
     boxes: List[List[float]],
     count: int,
     label: str,
+    box_color: tuple = BOX_COLOR,
 ) -> np.ndarray:
     """
     Draw bounding boxes + headcount banner on a full-resolution frame
@@ -145,7 +165,7 @@ def _draw_for_video(
         x2 = int(box[2]); y2 = int(box[3])
         bh = y2 - y1
         hy2 = y1 + max(int(bh * HEAD_DRAW_FRAC), HEAD_DRAW_MIN)
-        cv2.rectangle(vis, (x1, y1), (x2, hy2), BOX_COLOR, 2)
+        cv2.rectangle(vis, (x1, y1), (x2, hy2), box_color, 2)
 
     bw = vis.shape[1]
     overlay = vis.copy()
@@ -155,56 +175,42 @@ def _draw_for_video(
         vis,
         f"{count} people  |  {label}",
         (14, 34),
-        cv2.FONT_HERSHEY_SIMPLEX, 0.9, BOX_COLOR, 2, cv2.LINE_AA,
+        cv2.FONT_HERSHEY_SIMPLEX, 0.9, box_color, 2, cv2.LINE_AA,
     )
     return vis
 
 
-def count_people_tiled(
-    model, frame: np.ndarray
+def _count_people_tiled(
+    model, frame: np.ndarray,
+    tile_size: int, tile_overlap: float,
+    conf_thresh: float, per_tile_iou: float,
+    head_frac: float, min_head_px: int,
+    head_nms_iou: float,
 ) -> Tuple[int, List[List[float]]]:
-    """
-    Sliding-window tiled inference for dense crowds.
-
-    Splits the frame into overlapping TILE_SIZE x TILE_SIZE patches,
-    runs YOLO11x on each, converts box coords back to full-frame space,
-    then removes cross-tile duplicates using HEAD-REGION NMS.
-
-    Head-region NMS key insight:
-      Full-body boxes of adjacent people in a dense crowd can share
-      60-80% IoU, causing standard NMS to suppress real people.
-      By running NMS only on the top HEAD_FRAC of each box (the head /
-      shoulder area), neighboring heads rarely overlap, so each real
-      person survives deduplication.
-
-    Returns (count, kept_full_boxes_xyxy).
-    """
+    """Parameterised tiled inference shared by standard and dense modes."""
     h, w = frame.shape[:2]
-    stride = int(TILE_SIZE * (1 - TILE_OVERLAP))
+    stride = int(tile_size * (1 - tile_overlap))
 
     all_boxes:  List[List[float]] = []
     all_scores: List[float]       = []
 
-    ys = list(range(0, h, stride))
-    xs = list(range(0, w, stride))
+    for y in range(0, h, stride):
+        for x in range(0, w, stride):
+            y2 = min(y + tile_size, h)
+            x2 = min(x + tile_size, w)
+            y1 = max(0, y2 - tile_size)
+            x1 = max(0, x2 - tile_size)
 
-    for y in ys:
-        for x in xs:
-            # Clamp tile so it never exceeds frame boundary
-            y2 = min(y + TILE_SIZE, h)
-            x2 = min(x + TILE_SIZE, w)
-            y1 = max(0, y2 - TILE_SIZE)
-            x1 = max(0, x2 - TILE_SIZE)
-
-            tile    = frame[y1:y2, x1:x2]
-            results = model.predict(
-                tile,
-                classes=[0],          # person only
-                conf=CONF_THRESH,
-                iou=0.45,             # per-tile NMS – cross-tile head-NMS handles final dedup
-                verbose=False,
-                device="mps",
-            )
+            tile = frame[y1:y2, x1:x2]
+            with _GPU_LOCK:
+                results = model.predict(
+                    tile,
+                    classes=[0],
+                    conf=conf_thresh,
+                    iou=per_tile_iou,
+                    verbose=False,
+                    device="mps",
+                )
             for box in results[0].boxes:
                 bx1, by1, bx2, by2 = box.xyxy[0].tolist()
                 all_boxes.append([x1 + bx1, y1 + by1, x1 + bx2, y1 + by2])
@@ -213,23 +219,39 @@ def count_people_tiled(
     if not all_boxes:
         return 0, []
 
-    head_boxes: List[List[float]] = []
-    for b in all_boxes:
-        bx1, by1, bx2, by2 = b
-        bh = by2 - by1
-        head_h = max(bh * HEAD_FRAC, MIN_HEAD_PX)  # ensure meaningful head region even for short boxes
-        head_boxes.append([bx1, by1, bx2, by1 + head_h])
-
+    head_boxes: List[List[float]] = [
+        [bx1, by1, bx2, by1 + max((by2 - by1) * head_frac, min_head_px)]
+        for bx1, by1, bx2, by2 in all_boxes
+    ]
     keep = _nms(
-        np.array(head_boxes,  dtype=np.float32),
-        np.array(all_scores,  dtype=np.float32),
-        NMS_IOU,
+        np.array(head_boxes, dtype=np.float32),
+        np.array(all_scores, dtype=np.float32),
+        head_nms_iou,
     )
-    kept_boxes = [all_boxes[i] for i in keep]
-    return len(keep), kept_boxes
+    return len(keep), [all_boxes[i] for i in keep]
 
 
-# ── Main entry point ──────────────────────────────────────────────────────────
+def count_people_tiled(model, frame: np.ndarray) -> Tuple[int, List[List[float]]]:
+    """Standard-mode: balanced precision for low-to-medium density crowds."""
+    return _count_people_tiled(
+        model, frame,
+        tile_size=TILE_SIZE, tile_overlap=TILE_OVERLAP,
+        conf_thresh=CONF_THRESH, per_tile_iou=0.45,
+        head_frac=HEAD_FRAC, min_head_px=MIN_HEAD_PX,
+        head_nms_iou=NMS_IOU,
+    )
+
+
+def count_people_dense_tiled(model, frame: np.ndarray) -> Tuple[int, List[List[float]]]:
+    """Dense-mode: 99 % recall target for high-density crowds."""
+    return _count_people_tiled(
+        model, frame,
+        tile_size=DENSE_TILE_SIZE, tile_overlap=DENSE_TILE_OVERLAP,
+        conf_thresh=DENSE_CONF_THRESH, per_tile_iou=0.85,
+        head_frac=DENSE_HEAD_FRAC, min_head_px=DENSE_MIN_HEAD_PX,
+        head_nms_iou=DENSE_NMS_IOU,
+    )
+
 
 def _fire_window_callback(
     callback: Callable,
@@ -237,6 +259,7 @@ def _fire_window_callback(
     window_size: int,
     counts_by_second: Dict[int, int],
     window_peaks: Dict[int, dict],
+    box_color: tuple = BOX_COLOR,
 ) -> None:
     """Build a completed interval dict and pass it to window_callback."""
     we = ws + window_size
@@ -256,7 +279,7 @@ def _fire_window_callback(
     if ws in window_peaks:
         peak = window_peaks[ws]
         interval["preview_image"] = _annotate_frame(
-            peak["frame"], peak["boxes"], peak["count"], label
+            peak["frame"], peak["boxes"], peak["count"], label, box_color
         )
     callback(interval)
 
@@ -268,11 +291,14 @@ def process_video(
     output_video_path: Optional[str] = None,
     frame_callback: Optional[Callable[[bytes], None]] = None,
     window_callback: Optional[Callable[[Dict], None]] = None,
+    mode: str = 'standard',
 ) -> Dict:
     """
     Count people in a video and aggregate results into 30-second windows.
-    Uses tiled YOLO11x inference for dense-crowd accuracy.
-    Each interval includes a base64 JPEG preview of the peak detection frame.
+
+    mode='standard' – balanced accuracy / precision for low-to-medium density.
+    mode='dense'    – 99 % recall target for high-density crowds; uses aggressive
+                      confidence threshold and loose head-region NMS.
 
     output_video_path : writes the full annotated video as mp4.
     frame_callback    : called with JPEG bytes after each detection sample
@@ -328,7 +354,10 @@ def process_video(
     # --- Load YOLO11x ---
     from ultralytics import YOLO
     model = YOLO(MODEL_NAME)
-    logger.info(f"Loaded model: {MODEL_NAME}")
+    logger.info(f"Loaded model: {MODEL_NAME} | mode={mode}")
+
+    # Box colour depends on mode (teal = standard, orange = dense)
+    box_color = DENSE_BOX_COLOR if mode == 'dense' else BOX_COLOR
 
     # --- Frame sampling ---
     sample_interval  = max(1, int(fps * sample_every_n_seconds))
@@ -352,11 +381,14 @@ def process_video(
         frame_label = f"{format_time(ws)}-{format_time(we)}"
 
         if frame_idx % sample_interval == 0:
-            count, boxes   = count_people_tiled(model, frame)
+            if mode == 'dense':
+                count, boxes = count_people_dense_tiled(model, frame)
+            else:
+                count, boxes = count_people_tiled(model, frame)
             last_count     = count
             last_boxes     = boxes
             counts_by_second[int(current_second)] = count
-            logger.info(f"  t={int(current_second)}s -> {count} people")
+            logger.info(f"  [{mode}] t={int(current_second)}s -> {count} people")
 
             peak_ws = (int(current_second) // window_size) * window_size
             if peak_ws not in window_peaks or count >= window_peaks[peak_ws]["count"]:
@@ -370,14 +402,14 @@ def process_video(
             if window_callback and last_reported_ws is not None and ws > last_reported_ws:
                 _fire_window_callback(
                     window_callback, last_reported_ws, window_size,
-                    counts_by_second, window_peaks,
+                    counts_by_second, window_peaks, box_color,
                 )
             if last_reported_ws is None or ws > last_reported_ws:
                 last_reported_ws = ws
 
             # Push annotated frame for live MJPEG streaming
             if frame_callback:
-                stream_frame = _draw_for_video(frame, last_boxes, last_count, frame_label)
+                stream_frame = _draw_for_video(frame, last_boxes, last_count, frame_label, box_color)
                 _, buf = cv2.imencode(".jpg", stream_frame, [cv2.IMWRITE_JPEG_QUALITY, 72])
                 frame_callback(buf.tobytes())
 
@@ -386,7 +418,7 @@ def process_video(
 
         # Write annotated frame to output video
         if out_writer is not None:
-            annotated = _draw_for_video(frame, last_boxes, last_count, frame_label)
+            annotated = _draw_for_video(frame, last_boxes, last_count, frame_label, box_color)
             out_writer.write(annotated)
 
         frame_idx += 1
@@ -423,7 +455,7 @@ def process_video(
             if ws in window_peaks:
                 peak = window_peaks[ws]
                 interval["preview_image"] = _annotate_frame(
-                    peak["frame"], peak["boxes"], peak["count"], label
+                    peak["frame"], peak["boxes"], peak["count"], label, box_color
                 )
             intervals.append(interval)
 

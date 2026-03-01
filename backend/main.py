@@ -48,8 +48,8 @@ async def health():
     return {"status": "ok"}
 
 
-@app.post("/api/upload")
-async def upload_video(file: UploadFile = File(...)):
+async def _handle_upload(file: UploadFile, mode: str) -> dict:
+    """Shared upload handler — saves the file and starts a background job."""
     suffix = Path(file.filename).suffix.lower()
     if suffix not in ALLOWED_EXTENSIONS:
         raise HTTPException(
@@ -57,23 +57,34 @@ async def upload_video(file: UploadFile = File(...)):
             detail=f"Unsupported file type '{suffix}'. Accepted: {', '.join(ALLOWED_EXTENSIONS)}",
         )
 
-    job_id = str(uuid.uuid4())
+    job_id    = str(uuid.uuid4())
     dest_path = UPLOAD_DIR / f"{job_id}{suffix}"
 
-    # Stream file to disk
     async with aiofiles.open(dest_path, "wb") as out:
-        chunk_size = 1024 * 1024  # 1 MB chunks
+        chunk_size = 1024 * 1024
         while chunk := await file.read(chunk_size):
             await out.write(chunk)
 
-    logger.info(f"[{job_id}] Saved upload → {dest_path}")
+    logger.info(f"[{job_id}] Saved upload → {dest_path} (mode={mode})")
     jobs[job_id] = {"status": "processing", "progress": 0, "partial_intervals": []}
 
-    # Kick off background processing
     loop = asyncio.get_event_loop()
-    loop.run_in_executor(executor, _run_job, job_id, str(dest_path))
+    loop.run_in_executor(executor, _run_job, job_id, str(dest_path), mode)
 
     return {"job_id": job_id}
+
+
+@app.post("/api/upload")
+async def upload_standard(file: UploadFile = File(...)):
+    """Standard-mode upload — balanced precision for low-to-medium density crowds."""
+    return await _handle_upload(file, mode='standard')
+
+
+@app.post("/api/upload-dense")
+async def upload_dense(file: UploadFile = File(...)):
+    """Dense-mode upload — 99 % recall target for high-density crowds."""
+    return await _handle_upload(file, mode='dense')
+
 
 
 @app.get("/api/status/{job_id}")
@@ -138,11 +149,11 @@ async def stream_video(job_id: str):
 # Background worker
 # ---------------------------------------------------------------------------
 
-def _run_job(job_id: str, file_path: str):
+def _run_job(job_id: str, file_path: str, mode: str = 'standard'):
     import time
     output_path = str(OUTPUT_DIR / f"{job_id}_annotated.mp4")
     try:
-        logger.info(f"[{job_id}] Processing started")
+        logger.info(f"[{job_id}] Processing started (mode={mode})")
         t_start = time.time()
 
         def on_progress(pct: int):
@@ -154,12 +165,18 @@ def _run_job(job_id: str, file_path: str):
         def on_window(interval: dict):
             jobs[job_id]["partial_intervals"].append(interval)
 
+        # Dense mode uses ~4x more tiles per frame; sample every 2 s
+        # to keep wall-clock time comparable to standard mode.
+        sample_secs = 2.0 if mode == 'dense' else 1.0
+
         result = process_video(
             file_path,
             progress_callback=on_progress,
             output_video_path=output_path,
             frame_callback=on_frame,
             window_callback=on_window,
+            sample_every_n_seconds=sample_secs,
+            mode=mode,
         )
 
         result["processing_time_s"] = round(time.time() - t_start, 1)
@@ -173,7 +190,8 @@ def _run_job(job_id: str, file_path: str):
 
     except Exception as exc:
         logger.exception(f"[{job_id}] Failed")
-        jobs[job_id] = {"status": "error", "progress": 0, "error": str(exc)}
+        error_msg = str(exc) or f"{type(exc).__name__}: processing failed"
+        jobs[job_id] = {"status": "error", "progress": 0, "error": error_msg}
     finally:
         # Remove uploaded file after processing
         try:

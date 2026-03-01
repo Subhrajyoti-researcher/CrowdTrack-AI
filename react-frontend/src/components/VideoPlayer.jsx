@@ -1,13 +1,15 @@
-export default function VideoPlayer({ videoUrl }) {
+export default function VideoPlayer({ videoUrl, label, subtitle }) {
   if (!videoUrl) return null;
+  const title = label ? `Annotated Video — ${label}` : 'Annotated Video';
+  const desc  = subtitle ?? 'YOLO11x detections overlaid on original footage';
 
   return (
     <div className="card video-card" id="videoCard">
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1rem', flexWrap: 'wrap', gap: '.75rem' }}>
         <div>
-          <h3 className="section-title" style={{ margin: 0 }}>Annotated Video</h3>
+          <h3 className="section-title" style={{ margin: 0 }}>{title}</h3>
           <p style={{ fontSize: '.78rem', color: 'var(--text-muted)', marginTop: '.2rem' }}>
-            YOLO11x detections overlaid on original footage
+            {desc}
           </p>
         </div>
         <a

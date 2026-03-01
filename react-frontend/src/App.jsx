@@ -5,93 +5,126 @@ import UploadSection from './components/UploadSection';
 import ProcessingSection from './components/ProcessingSection';
 import ResultsSection from './components/ResultsSection';
 import Lightbox from './components/Lightbox';
-import { uploadVideo, fetchStatus } from './api';
-
-const POLL_MS = 1500;
+import { uploadVideo, uploadVideoDense } from './api';
+import useJobPoller from './hooks/useJobPoller';
 
 export default function App() {
-  const [section,      setSection]      = useState('upload');   // 'upload' | 'processing' | 'results'
-  const [selectedFile, setSelectedFile] = useState(null);
-  const [fileHint,     setFileHint]     = useState('');
-  const [jobId,        setJobId]        = useState(null);
-  const [progress,     setProgress]     = useState(0);
-  const [results,          setResults]          = useState(null);
-  const [partialIntervals, setPartialIntervals] = useState([]);
-  const [lightbox,         setLightbox]         = useState(null); // { src, caption } | null
-  const [error,            setError]            = useState(null);
+  const [section,  setSection]  = useState('upload');
+  const [lightbox, setLightbox] = useState(null);
+  const [error,    setError]    = useState(null);
+
+  // ── Standard job ─────────────────────────────────────────────────────────
+  const [selectedFileStd,     setSelectedFileStd]     = useState(null);
+  const [fileHintStd,         setFileHintStd]         = useState('');
+  const [jobIdStd,            setJobIdStd]            = useState(null);
+  const [progressStd,         setProgressStd]         = useState(0);
+  const [resultsStd,          setResultsStd]          = useState(null);
+  const [partialIntervalsStd, setPartialIntervalsStd] = useState([]);
+  const [errorStd,            setErrorStd]            = useState(null);
+
+  // ── Dense job ─────────────────────────────────────────────────────────────
+  const [selectedFileDense,     setSelectedFileDense]     = useState(null);
+  const [fileHintDense,         setFileHintDense]         = useState('');
+  const [jobIdDense,            setJobIdDense]            = useState(null);
+  const [progressDense,         setProgressDense]         = useState(0);
+  const [resultsDense,          setResultsDense]          = useState(null);
+  const [partialIntervalsDense, setPartialIntervalsDense] = useState([]);
+  const [errorDense,            setErrorDense]            = useState(null);
 
   // ---- File selection ----
-  function handleFile(file) {
-    setSelectedFile(file);
-    const mb = (file.size / (1024 * 1024)).toFixed(1);
-    setFileHint(`${file.name}  (${mb} MB)`);
+  function handleFileStd(file) {
+    setSelectedFileStd(file);
+    setFileHintStd(`${file.name}  (${(file.size / 1048576).toFixed(1)} MB)`);
+  }
+  function handleFileDense(file) {
+    setSelectedFileDense(file);
+    setFileHintDense(`${file.name}  (${(file.size / 1048576).toFixed(1)} MB)`);
   }
 
-  // ---- Start analysis ----
+  // ---- Start analysis (upload whichever files are selected) ----
   async function handleAnalyse() {
-    if (!selectedFile) return;
+    if (!selectedFileStd && !selectedFileDense) return;
     setSection('processing');
-    setProgress(0);
+    setProgressStd(0);
+    setProgressDense(0);
+    setResultsStd(null);
+    setResultsDense(null);
+    setPartialIntervalsStd([]);
+    setPartialIntervalsDense([]);
+    setErrorStd(null);
+    setErrorDense(null);
     setError(null);
 
-    const formData = new FormData();
-    formData.append('file', selectedFile);
-
-    try {
-      const { job_id } = await uploadVideo(formData);
-      setJobId(job_id);
-    } catch (err) {
-      setError(err.message);
-      setSection('upload');
+    const uploads = [];
+    if (selectedFileStd) {
+      const fd = new FormData();
+      fd.append('file', selectedFileStd);
+      uploads.push(uploadVideo(fd).then(r => setJobIdStd(r.job_id)).catch(err => setErrorStd(err.message)));
     }
+    if (selectedFileDense) {
+      const fd = new FormData();
+      fd.append('file', selectedFileDense);
+      uploads.push(uploadVideoDense(fd).then(r => setJobIdDense(r.job_id)).catch(err => setErrorDense(err.message)));
+    }
+    await Promise.all(uploads);
   }
 
-  // ---- Status polling ----
+  // ---- Poll jobs ----
+  useJobPoller(jobIdStd, section, {
+    onProgress: setProgressStd,
+    onPartialIntervals: setPartialIntervalsStd,
+    onComplete: setResultsStd,
+    onError: setErrorStd,
+  });
+  useJobPoller(jobIdDense, section, {
+    onProgress: setProgressDense,
+    onPartialIntervals: setPartialIntervalsDense,
+    onComplete: setResultsDense,
+    onError: setErrorDense,
+  });
+
+  // ---- Transition to results when all active jobs finish ----
   useEffect(() => {
-    if (!jobId || section !== 'processing') return;
+    if (section !== 'processing') return;
 
-    const timer = setInterval(async () => {
-      try {
-        const data = await fetchStatus(jobId);
-        if (!data) return;
+    // Guard: wait until at least one upload has resolved (success → jobId set,
+    // or failure → errorStd/errorDense set). Without this guard the effect fires
+    // the instant section becomes 'processing', before any fetch has returned,
+    // and incorrectly concludes "no active jobs = failed".
+    const anyStarted = jobIdStd !== null || jobIdDense !== null ||
+                       errorStd !== null  || errorDense !== null;
+    if (!anyStarted) return;
 
-        setProgress(data.progress ?? 0);
-        if (data.partial_intervals?.length) {
-          setPartialIntervals(data.partial_intervals);
-        }
+    const stdActive  = jobIdStd   !== null;
+    const denseActive = jobIdDense !== null;
+    const stdDone    = !stdActive   || resultsStd   !== null || errorStd   !== null;
+    const denseDone  = !denseActive || resultsDense !== null || errorDense !== null;
+    if (!stdDone || !denseDone) return;
 
-        if (data.status === 'completed') {
-          clearInterval(timer);
-          setProgress(100);
-          setTimeout(() => {
-            setResults(data.results);
-            setSection('results');
-            window.scrollTo({ top: 0, behavior: 'smooth' });
-          }, 400);
-        } else if (data.status === 'error') {
-          clearInterval(timer);
-          setError(data.error || 'Processing failed');
-          setSection('upload');
-        }
-      } catch (_) { /* network hiccup — retry next tick */ }
-    }, POLL_MS);
-
-    return () => clearInterval(timer);
-  }, [jobId, section]);
+    if (!resultsStd && !resultsDense) {
+      setError(`Processing failed — ${errorStd || errorDense || 'unknown error'}`);
+      setSection('upload');
+      return;
+    }
+    setTimeout(() => {
+      setSection('results');
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }, 400);
+  }, [resultsStd, resultsDense, errorStd, errorDense, jobIdStd, jobIdDense, section]);
 
   // ---- Reset ----
   function handleReset() {
-    setSelectedFile(null);
-    setFileHint('');
-    setJobId(null);
-    setProgress(0);
-    setResults(null);
-    setPartialIntervals([]);
+    setSelectedFileStd(null);   setFileHintStd('');
+    setSelectedFileDense(null); setFileHintDense('');
+    setJobIdStd(null);   setProgressStd(0);   setResultsStd(null);   setPartialIntervalsStd([]);   setErrorStd(null);
+    setJobIdDense(null); setProgressDense(0); setResultsDense(null); setPartialIntervalsDense([]); setErrorDense(null);
     setLightbox(null);
     setError(null);
     setSection('upload');
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }
+
+  const analyseDisabled = !selectedFileStd && !selectedFileDense;
 
   return (
     <>
@@ -109,25 +142,30 @@ export default function App() {
 
         {section === 'upload' && (
           <UploadSection
-            onFile={handleFile}
-            fileHint={fileHint}
+            onFileStd={handleFileStd}     fileHintStd={fileHintStd}
+            onFileDense={handleFileDense} fileHintDense={fileHintDense}
             onAnalyse={handleAnalyse}
-            analyseDisabled={!selectedFile}
+            analyseDisabled={analyseDisabled}
           />
         )}
 
         {section === 'processing' && (
           <ProcessingSection
-            progress={progress}
-            jobId={jobId}
-            partialIntervals={partialIntervals}
+            progressStd={progressStd}
+            progressDense={progressDense}
+            jobIdStd={jobIdStd}
+            jobIdDense={jobIdDense}
+            partialIntervalsStd={partialIntervalsStd}
+            partialIntervalsDense={partialIntervalsDense}
+            dualMode={!!(selectedFileStd && selectedFileDense)}
             onOpenLightbox={(src, caption) => setLightbox({ src, caption })}
           />
         )}
 
-        {section === 'results' && results && (
+        {section === 'results' && (
           <ResultsSection
-            results={results}
+            resultsStd={resultsStd}
+            resultsDense={resultsDense}
             onReset={handleReset}
             onOpenLightbox={(src, caption) => setLightbox({ src, caption })}
           />
