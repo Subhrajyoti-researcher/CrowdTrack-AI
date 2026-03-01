@@ -15,3 +15,6 @@ torchvision==0.25.0
 # Video / image processing
 opencv-python-headless==4.9.0.80
 numpy==1.26.4
+
+# Excel export
+openpyxl

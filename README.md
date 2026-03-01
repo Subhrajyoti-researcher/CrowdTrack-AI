@@ -13,6 +13,7 @@ Real-time crowd counting from CCTV footage using **YOLO11x** person detection. U
 - **Annotated video output** — downloadable MP4 with headcount overlay per job
 - **30-second window analytics** — min / avg / max count per window, live preview thumbnails
 - **Interactive dashboard** — bar+line chart, colour-coded table, frame gallery
+- **Excel export** — download all results (Summary + per-mode interval tables) as a single `.xlsx` file
 - **Processing time** displayed alongside all results
 
 ---
@@ -110,6 +111,7 @@ cd react-frontend && npm run build
 | `GET` | `/api/status/{job_id}` | Poll progress + results |
 | `GET` | `/api/stream/{job_id}` | MJPEG live stream during processing |
 | `GET` | `/api/video/{job_id}` | Download annotated MP4 |
+| `GET` | `/api/export-excel` | Download results as `.xlsx` — query params: `std_job_id`, `dense_job_id` |
 | `GET` | `/api/health` | Health check |
 
 ### Status response (completed)

@@ -22,3 +22,18 @@ export async function fetchStatus(jobId) {
   if (!res.ok) return null;
   return res.json();
 }
+
+export async function downloadExcel(stdJobId, denseJobId) {
+  const params = new URLSearchParams();
+  if (stdJobId)   params.set('std_job_id',   stdJobId);
+  if (denseJobId) params.set('dense_job_id', denseJobId);
+  const res = await fetch(`/api/export-excel?${params}`);
+  if (!res.ok) throw new Error('Excel export failed');
+  const blob = await res.blob();
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href     = url;
+  a.download = 'crowdtrack_results.xlsx';
+  a.click();
+  URL.revokeObjectURL(url);
+}

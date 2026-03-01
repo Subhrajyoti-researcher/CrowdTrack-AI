@@ -1,11 +1,14 @@
 import asyncio
+import io
 import logging
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import aiofiles
-from fastapi import FastAPI, File, HTTPException, UploadFile
+import openpyxl
+from openpyxl.styles import Alignment, Font, PatternFill
+from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -142,6 +145,158 @@ async def stream_video(job_id: str):
     return StreamingResponse(
         mjpeg_generator(),
         media_type="multipart/x-mixed-replace; boundary=frame",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Excel export
+# ---------------------------------------------------------------------------
+
+_HEADER_FILL = PatternFill("solid", fgColor="1E2530")
+_HEADER_FONT = Font(bold=True, color="FFFFFF")
+_SUMMARY_FILL = PatternFill("solid", fgColor="2A3244")
+_SUMMARY_FONT = Font(bold=True, color="E2E8F0")
+
+
+def _set_header_row(ws, row, values):
+    for col, val in enumerate(values, 1):
+        cell = ws.cell(row=row, column=col, value=val)
+        cell.fill = _HEADER_FILL
+        cell.font = _HEADER_FONT
+        cell.alignment = Alignment(horizontal="center")
+
+
+def _autosize_columns(ws):
+    for col in ws.columns:
+        max_len = max((len(str(c.value)) if c.value is not None else 0) for c in col)
+        ws.column_dimensions[col[0].column_letter].width = min(max_len + 4, 40)
+
+
+def _crowd_level(count, peak):
+    if peak == 0:
+        return "Low"
+    ratio = count / peak
+    if ratio >= 0.70:
+        return "High"
+    if ratio >= 0.35:
+        return "Medium"
+    return "Low"
+
+
+def _build_excel(std_results, dense_results) -> bytes:
+    wb = openpyxl.Workbook()
+
+    # ── Summary sheet ──────────────────────────────────────────────────
+    ws_sum = wb.active
+    ws_sum.title = "Summary"
+
+    labels = ["Metric", "Standard Analysis", "Dense Analysis"] if (std_results and dense_results) else \
+             ["Metric", "Standard Analysis"] if std_results else ["Metric", "Dense Analysis"]
+    _set_header_row(ws_sum, 1, labels)
+
+    def _fmt_dur(secs):
+        if secs is None:
+            return "—"
+        m, s = divmod(int(secs), 60)
+        return f"{m}m {s}s"
+
+    rows = [
+        ("Video Duration",   _fmt_dur(std_results.get("duration") if std_results else None),
+                             _fmt_dur(dense_results.get("duration") if dense_results else None)),
+        ("FPS",              f'{std_results["fps"]:.2f}' if std_results else "—",
+                             f'{dense_results["fps"]:.2f}' if dense_results else "—"),
+        ("Peak Count",       std_results["overall_max"] if std_results else "—",
+                             dense_results["overall_max"] if dense_results else "—"),
+        ("Avg per Window",   std_results["overall_avg"] if std_results else "—",
+                             dense_results["overall_avg"] if dense_results else "—"),
+        ("30-s Windows",     len(std_results["intervals"]) if std_results else "—",
+                             len(dense_results["intervals"]) if dense_results else "—"),
+        ("Processing Time",  f'{std_results["processing_time_s"]}s' if std_results else "—",
+                             f'{dense_results["processing_time_s"]}s' if dense_results else "—"),
+    ]
+
+    for r_idx, row_data in enumerate(rows, 2):
+        values = row_data[:len(labels)]
+        for c_idx, val in enumerate(values, 1):
+            cell = ws_sum.cell(row=r_idx, column=c_idx, value=val)
+            if c_idx == 1:
+                cell.font = Font(bold=True)
+    ws_sum.freeze_panes = "A2"
+    _autosize_columns(ws_sum)
+
+    # ── Per-mode interval sheets ────────────────────────────────────────
+    def _add_interval_sheet(results, sheet_name):
+        ws = wb.create_sheet(sheet_name)
+        headers = ["#", "Time Window", "Min", "Avg", "Max", "Samples", "Crowd Level"]
+        _set_header_row(ws, 1, headers)
+
+        peak = results["overall_max"]
+        intervals = results["intervals"]
+
+        # Summary row
+        overall_min = min(i["min_count"] for i in intervals) if intervals else 0
+        total_samples = sum(i["samples"] for i in intervals)
+        summary_vals = ["Overall", intervals[0]["label"].split("–")[0].strip() + " – " +
+                        intervals[-1]["label"].split("–")[-1].strip() if len(intervals) > 1 else (intervals[0]["label"] if intervals else "—"),
+                        overall_min, results["overall_avg"], peak, total_samples,
+                        _crowd_level(peak, peak) + " (Peak)"]
+        for c_idx, val in enumerate(summary_vals, 1):
+            cell = ws.cell(row=2, column=c_idx, value=val)
+            cell.fill = _SUMMARY_FILL
+            cell.font = _SUMMARY_FONT
+
+        # Per-window rows
+        for r_idx, interval in enumerate(intervals, 3):
+            ws.cell(row=r_idx, column=1, value=r_idx - 2)
+            ws.cell(row=r_idx, column=2, value=interval["label"])
+            ws.cell(row=r_idx, column=3, value=interval["min_count"])
+            ws.cell(row=r_idx, column=4, value=interval["avg_count"])
+            ws.cell(row=r_idx, column=5, value=interval["max_count"])
+            ws.cell(row=r_idx, column=6, value=interval["samples"])
+            ws.cell(row=r_idx, column=7, value=_crowd_level(interval["max_count"], peak))
+
+        ws.freeze_panes = "A3"
+        _autosize_columns(ws)
+
+    if std_results:
+        _add_interval_sheet(std_results, "Standard Analysis")
+    if dense_results:
+        _add_interval_sheet(dense_results, "Dense Analysis")
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+@app.get("/api/export-excel")
+async def export_excel(
+    std_job_id: str | None = Query(default=None),
+    dense_job_id: str | None = Query(default=None),
+):
+    std_results = None
+    dense_results = None
+
+    if std_job_id:
+        job = jobs.get(std_job_id)
+        if not job or job.get("status") != "completed":
+            raise HTTPException(status_code=404, detail="Standard job not completed")
+        std_results = job["results"]
+
+    if dense_job_id:
+        job = jobs.get(dense_job_id)
+        if not job or job.get("status") != "completed":
+            raise HTTPException(status_code=404, detail="Dense job not completed")
+        dense_results = job["results"]
+
+    if not std_results and not dense_results:
+        raise HTTPException(status_code=400, detail="No job IDs provided")
+
+    xlsx_bytes = _build_excel(std_results, dense_results)
+
+    return StreamingResponse(
+        io.BytesIO(xlsx_bytes),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=crowdtrack_results.xlsx"},
     )
 
 

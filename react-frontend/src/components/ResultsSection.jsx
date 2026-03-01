@@ -4,8 +4,9 @@ import CrowdChart from './CrowdChart';
 import ResultsTable from './ResultsTable';
 import VideoPlayer from './VideoPlayer';
 import FramesGallery from './FramesGallery';
+import { downloadExcel } from '../api';
 
-export default function ResultsSection({ resultsStd, resultsDense, onOpenLightbox }) {
+export default function ResultsSection({ resultsStd, resultsDense, jobIdStd, jobIdDense, onOpenLightbox }) {
   const frameRefsStd   = useRef({});
   const frameRefsDense = useRef({});
   const [activeTab, setActiveTab] = useState(resultsDense ? 'dense' : 'std');
@@ -26,8 +27,22 @@ export default function ResultsSection({ resultsStd, resultsDense, onOpenLightbo
     setTimeout(() => el.classList.remove('frame-highlight'), 1800);
   }
 
+  function handleDownloadExcel() {
+    downloadExcel(jobIdStd, jobIdDense).catch(() => {});
+  }
+
   return (
     <section id="resultsSection">
+      {/* Download Excel button */}
+      <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '1rem' }}>
+        <button className="btn-download" onClick={handleDownloadExcel}>
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+            <path d="M7 1v8M4 6l3 3 3-3M2 11h10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+          </svg>
+          Download Excel
+        </button>
+      </div>
+
       {/* Tabs for analytics (stats / chart / table) */}
       {hasBoth && (
         <div className="results-tabs">

@@ -166,6 +166,8 @@ export default function App() {
           <ResultsSection
             resultsStd={resultsStd}
             resultsDense={resultsDense}
+            jobIdStd={jobIdStd}
+            jobIdDense={jobIdDense}
             onReset={handleReset}
             onOpenLightbox={(src, caption) => setLightbox({ src, caption })}
           />
