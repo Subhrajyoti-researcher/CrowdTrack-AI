@@ -51,6 +51,10 @@ CrowdTrack-AI/
 │   │                        ResultsSection, CrowdChart, Lightbox, …
 │   ├── vite.config.js       Dev proxy → FastAPI :8000
 │   └── dist/                Production build (served by FastAPI)
+├── Dockerfile               Multi-stage build (Node → Python, CPU + GPU via build arg)
+├── docker-compose.yml       CPU (default) and NVIDIA GPU deployment profiles
+├── .dockerignore            Excludes venv, node_modules, model weights, outputs
+├── DEPLOY.md                Step-by-step on-prem deployment guide for edge teams
 ├── setup.sh                 One-time install (Python venv + Node build)
 └── start.sh                 Launch production server
 ```
@@ -68,6 +72,24 @@ CrowdTrack-AI/
 ---
 
 ## Quick Start
+
+### Docker (recommended)
+
+```bash
+# CPU (any machine with Docker)
+docker compose up -d
+
+# NVIDIA GPU
+docker compose --profile gpu up -d
+
+# Open browser
+open http://localhost:8000
+```
+
+> **Note:** `yolo11x.pt` must be present in the repo root before starting — it is mounted into the container at runtime and is not baked into the image.  
+> See [DEPLOY.md](DEPLOY.md) for the full on-prem edge deployment guide.
+
+### Local (dev / no Docker)
 
 ```bash
 # 1 – Install Python deps and build React frontend (one time)
@@ -99,6 +121,15 @@ After making frontend changes, rebuild for production:
 ```bash
 cd react-frontend && npm run build
 ```
+
+---
+
+## Environment Variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `CROWDTRACK_DEVICE` | `auto` | Inference device: `auto` (CUDA → MPS → CPU), `cuda`, `mps`, `cpu` |
+| `CROWDTRACK_MODEL` | `yolo11x.pt` | Path to YOLO model weights file |
 
 ---
 
@@ -154,7 +185,7 @@ OpenCV VideoCapture  →  Sample every 1 s
 Split frame into 640×640 tiles (35% overlap)
     │
     ▼
-YOLO11x  (conf ≥ 0.30, per-tile iou = 0.45, device = MPS)
+YOLO11x  (conf ≥ 0.30, per-tile iou = 0.45, device = auto: CUDA → MPS → CPU)
     │
     ▼
 Acquire _GPU_LOCK  →  run inference  →  release lock
