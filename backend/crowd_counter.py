@@ -10,13 +10,32 @@ from typing import Callable, Optional, Dict, List, Tuple
 
 logger = logging.getLogger(__name__)
 
-# Serialise all GPU calls — MPS (Apple Metal) does not support true concurrent
-# inference.  Without this lock the two job threads fight over the GPU and
-# whichever grabs it first starves the other completely.
+# ── Device auto-detection ─────────────────────────────────────────────────────
+# Priority: CROWDTRACK_DEVICE env var → CUDA → MPS (Apple) → CPU
+# Edge deployments set CROWDTRACK_DEVICE=cuda or CROWDTRACK_DEVICE=cpu
+def _resolve_device() -> str:
+    env = os.environ.get("CROWDTRACK_DEVICE", "").strip().lower()
+    if env:
+        return env
+    try:
+        import torch
+        if torch.cuda.is_available():
+            return "cuda"
+        if torch.backends.mps.is_available():
+            return "mps"
+    except Exception:
+        pass
+    return "cpu"
+
+INFERENCE_DEVICE = _resolve_device()
+logger.info(f"Inference device: {INFERENCE_DEVICE}")
+
+# Serialise all GPU calls — MPS and single-GPU CUDA do not support true
+# concurrent inference from multiple threads.
 _GPU_LOCK = threading.Lock()
 
 # ── Model config ─────────────────────────────────────────────────────────────
-MODEL_NAME   = "yolo11x.pt"   # extra-large model – highest accuracy
+MODEL_NAME   = os.environ.get("CROWDTRACK_MODEL", "yolo11x.pt")  # override via env
 CONF_THRESH  = 0.30           # raised to eliminate low-confidence false positives in night CCTV
 NMS_IOU      = 0.35           # relaxed IoU – prevents suppression of close-standing people
 TILE_SIZE    = 640            # larger tiles → fewer tiles → fewer cross-tile seam duplicates
@@ -209,7 +228,7 @@ def _count_people_tiled(
                     conf=conf_thresh,
                     iou=per_tile_iou,
                     verbose=False,
-                    device="mps",
+                    device=INFERENCE_DEVICE,
                 )
             for box in results[0].boxes:
                 bx1, by1, bx2, by2 = box.xyxy[0].tolist()

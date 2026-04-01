@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# Node
+react-frontend/node_modules/
+react-frontend/.cache/
+
+# Dev / IDE
+.git/
+.gitignore
+*.md
+.env
+.env.*
+
+# Outputs / uploads (mounted as volumes at runtime)
+backend/uploads/
+backend/outputs/
+
+# Model weights (mounted at runtime, not baked into image)
+*.pt
+backend/*.pt
+
+# Mac
+.DS_Store

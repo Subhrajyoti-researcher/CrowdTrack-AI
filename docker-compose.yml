@@ -1,0 +1,90 @@
+# ============================================================
+# CrowdTrack AI – Docker Compose
+#
+# CPU-only (default):
+#   docker compose up
+#
+# NVIDIA GPU:
+#   docker compose --profile gpu up
+#
+# ============================================================
+
+services:
+
+  # ── CPU / default deployment ─────────────────────────────────────────────
+  crowdtrack:
+    build:
+      context: .
+      args:
+        TORCH_INDEX_URL: https://download.pytorch.org/whl/cpu   # CPU-only wheels
+    image: crowdtrack-ai:cpu-latest
+    container_name: crowdtrack-ai
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - CROWDTRACK_DEVICE=auto        # auto-detects CUDA → CPU inside container
+      - CROWDTRACK_MODEL=yolo11x.pt
+    volumes:
+      - ./yolo11x.pt:/app/backend/yolo11x.pt:ro   # mount model – avoids baking it into image
+      - crowdtrack_uploads:/app/backend/uploads
+      - crowdtrack_outputs:/app/backend/outputs
+    deploy:
+      resources:
+        limits:
+          memory: 8g
+          cpus: "4"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+      retries: 3
+    profiles:
+      - default
+      - ""                                          # runs with plain `docker compose up`
+
+  # ── NVIDIA GPU deployment ─────────────────────────────────────────────────
+  # Requires nvidia-container-toolkit on the host:
+  #   https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html
+  #
+  # The NVIDIA runtime injects libcuda.so into the container at start, so the
+  # python:3.11-slim base image is sufficient — no separate CUDA base needed.
+  crowdtrack-gpu:
+    build:
+      context: .
+      args:
+        TORCH_INDEX_URL: https://download.pytorch.org/whl/cu121   # CUDA 12.1 wheels
+    image: crowdtrack-ai:gpu-latest
+    container_name: crowdtrack-ai-gpu
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - CROWDTRACK_DEVICE=cuda
+      - CROWDTRACK_MODEL=yolo11x.pt
+    volumes:
+      - ./yolo11x.pt:/app/backend/yolo11x.pt:ro
+      - crowdtrack_uploads:/app/backend/uploads
+      - crowdtrack_outputs:/app/backend/outputs
+    deploy:
+      resources:
+        limits:
+          memory: 16g
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+      retries: 3
+    profiles:
+      - gpu
+
+volumes:
+  crowdtrack_uploads:
+  crowdtrack_outputs:

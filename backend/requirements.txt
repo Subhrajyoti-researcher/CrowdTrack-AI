@@ -8,9 +8,11 @@ python-multipart==0.0.9
 aiofiles==23.2.1
 
 # AI / ML
-ultralytics==8.4.14        # YOLO11x person detection
-torch==2.10.0              # PyTorch (MPS on Apple Silicon, CUDA on GPU)
-torchvision==0.25.0
+ultralytics==8.3.145       # YOLO11x person detection
+# PyTorch CPU build — works on any Linux edge box.
+# For NVIDIA GPU, edge team should install torch+cu* wheel instead.
+torch==2.3.1
+torchvision==0.18.1
 
 # Video / image processing
 opencv-python-headless==4.9.0.80
